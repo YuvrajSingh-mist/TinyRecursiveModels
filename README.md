@@ -28,15 +28,12 @@ python3 -m venv .venv && source .venv/bin/activate
 python -m pip install --upgrade pip wheel setuptools
 
 # 2) Install PyTorch (pick ONE that fits your machine)
-# CPU only:
-pip install torch torchvision torchaudio
 # CUDA 12.6 wheels (Linux w/ NVIDIA drivers):
-# pip install --pre --upgrade torch torchvision torchaudio \
-#   --index-url https://download.pytorch.org/whl/nightly/cu126
+pip install --pre --upgrade torch torchvision torchaudio \
+  --index-url https://download.pytorch.org/whl/nightly/cu128
 
 # 3) Install project deps and optimizer
-pip install -r requirements.txt
-pip install --no-cache-dir --no-build-isolation adam-atan2
+pip install -e .
 
 # 4) Optional: log to Weights & Biases
 # wandb login
@@ -48,14 +45,14 @@ All builders output into `data/<dataset-name>/` with the expected `train/` and `
 
 ```bash
 # ARC-AGI-1 (uses files in kaggle/combined already in this repo)
-python -m dataset.build_arc_dataset \
+python -m trm.data.build_arc_dataset \
   --input-file-prefix kaggle/combined/arc-agi \
   --output-dir data/arc1concept-aug-1000 \
   --subsets training evaluation concept \
   --test-set-name evaluation
 
 # ARC-AGI-2
-python -m dataset.build_arc_dataset \
+python -m trm.data.build_arc_dataset \
   --input-file-prefix kaggle/combined/arc-agi \
   --output-dir data/arc2concept-aug-1000 \
   --subsets training2 evaluation2 concept \
@@ -64,13 +61,13 @@ python -m dataset.build_arc_dataset \
 # Note: don't train on both ARC-AGI-1 and ARC-AGI-2 simultaneously if you plan to evaluate both; ARC-AGI-2 train includes some ARC-AGI-1 eval puzzles.
 
 # Sudoku-Extreme (1k base, 1k augments)
-python dataset/build_sudoku_dataset.py \
+python -m trm.data.build_sudoku_dataset \
   --output-dir data/sudoku-extreme-1k-aug-1000 \
   --subsample-size 1000 \
   --num-aug 1000
 
 # Maze-Hard (30x30)
-python dataset/build_maze_dataset.py
+python -m trm.data.build_maze_dataset
 ```
 
 ## Training
@@ -86,7 +83,7 @@ Tips
 ```bash
 run_name="pretrain_att_arc1concept"
 torchrun --nproc-per-node 8 --rdzv_backend=c10d --rdzv_endpoint=localhost:0 --nnodes=1 \
-  pretrain.py \
+  scripts/train.py \
   arch=trm \
   data_paths="[data/arc1concept-aug-1000]" \
   arch.L_layers=2 \
@@ -102,7 +99,7 @@ torchrun --nproc-per-node 8 --rdzv_backend=c10d --rdzv_endpoint=localhost:0 --nn
 ```bash
 run_name="pretrain_att_arc2concept"
 torchrun --nproc-per-node 8 --rdzv_backend=c10d --rdzv_endpoint=localhost:0 --nnodes=1 \
-  pretrain.py \
+  scripts/train.py \
   arch=trm \
   data_paths="[data/arc2concept-aug-1000]" \
   arch.L_layers=2 \
@@ -120,7 +117,7 @@ MLP-Tiny variant:
 ```bash
 run_name="pretrain_mlp_t_sudoku"
 torchrun --nproc-per-node 8 --rdzv_backend=c10d --rdzv_endpoint=localhost:0 --nnodes=1 \
-  pretrain.py \
+  scripts/train.py \
   arch=trm \
   data_paths="[data/sudoku-extreme-1k-aug-1000]" \
   evaluators="[]" \
@@ -139,7 +136,7 @@ Attention variant:
 ```bash
 run_name="pretrain_att_sudoku"
 torchrun --nproc-per-node 8 --rdzv_backend=c10d --rdzv_endpoint=localhost:0 --nnodes=1 \
-  pretrain.py \
+  scripts/train.py \
   arch=trm \
   data_paths="[data/sudoku-extreme-1k-aug-1000]" \
   evaluators="[]" \
@@ -157,7 +154,7 @@ torchrun --nproc-per-node 8 --rdzv_backend=c10d --rdzv_endpoint=localhost:0 --nn
 ```bash
 run_name="pretrain_att_maze30x30"
 torchrun --nproc-per-node 8 --rdzv_backend=c10d --rdzv_endpoint=localhost:0 --nnodes=1 \
-  pretrain.py \
+  scripts/train.py \
   arch=trm \
   data_paths="[data/maze-30x30-hard-1k]" \
   evaluators="[]" \
@@ -172,14 +169,14 @@ torchrun --nproc-per-node 8 --rdzv_backend=c10d --rdzv_endpoint=localhost:0 --nn
 
 ## Evaluate checkpoints (local)
 
-Use the evaluation-only runner that mirrors `pretrain.py` evaluation.
+Use the evaluation-only runner that mirrors `scripts/train.py` evaluation.
 
 Single GPU / CPU smoke test (one batch):
 
 ```bash
 python scripts/run_eval_only.py \
-  --checkpoint trained_models/step_32550_sudoku_epoch50k \
-  --dataset data/sudoku-extreme-1k-aug-1000 \
+  --checkpoint alphaxiv/trm-model-maze/maze_hard_step_32550 \
+  --dataset data/maze-30x30-hard-1k \
   --one-batch
 ```
 
@@ -217,35 +214,13 @@ torchrun --nproc_per_node=8 scripts/run_eval_only.py \
   --apply-ema
 ```
 
-## Evaluate in the cloud (Modal)
+## Pretrained Weights
 
-We ship a Modal app for easy, reproducible, GPU-backed evaluation and web endpoints.
+If you'd like to download the pretrained model weights used in experiments, they are available on Hugging Face:
 
-```bash
-# 1) Install and authenticate
-pip install modal
-modal token new
-
-# 2) ARC-AGI-1 eval job (A100 x2 by default in infra)
-modal run infra/modal_app.py::run_eval_arc_job \
-  --dataset-path=data/arc1concept-aug-1000 \
-  --batch-size=512
-
-# 3) Maze eval job
-modal run infra/modal_app.py::run_eval_maze_job \
-  --batch-size=256
-```
-
-The app also exposes simple visualizers and a realtime endpoint; see function docstrings in `infra/modal_app.py`.
-
-## Visualization
-
-Open the HTML pages directly in a browser:
-
-- `arc_visualizer.html`
-- `maze_visualizer.html`
-- `sudoku_visualizer.html`
-- `unified_visualizer.html`
+- Maze (30x30 TRM weights): https://huggingface.co/alphaXiv/trm-model-maze
+- Sudoku (TRM weights): https://huggingface.co/alphaXiv/trm-model-sudoku
+- ARC AGI 1 (TRM attention weights): https://huggingface.co/alphaXiv/trm-model-arc-agi-1
 
 ## Reproducing paper numbers
 
@@ -253,6 +228,12 @@ Open the HTML pages directly in a browser:
 - Use the training commands in this README (matching `scripts/cmd.sh` but with minor fixes like line breaks and env-safe flags).
 - Keep seeds at defaults (`seed=0` in `config/cfg_pretrain.yaml`); runs are deterministic modulo CUDA kernels.
 - Evaluate with `scripts/run_eval_only.py` and report `exact_accuracy` and per-task metrics. The script will compute Wilson 95% CI when dataset metadata is present.
+
+## Reproduction Report
+
+For detailed analysis of independent reproduction attempts and comparison with published claims, see [REPORT.md](REPORT.md).
+
+This report includes evaluation results, performance comparisons, and insights from reproducing the TRM paper's results across Maze-Hard, ARC-AGI-1, and Sudoku-Extreme benchmarks.
 
 ## Troubleshooting
 
